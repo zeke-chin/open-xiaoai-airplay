@@ -1,0 +1,4 @@
+build/.build
+build/.build.log
+build/dist
+.DS_Store

@@ -1,0 +1,30 @@
+diff --git a/utilities/generate_device_uuid.c b/utilities/generate_device_uuid.c
+index 2ec5a8da..53690379 100644
+--- a/utilities/generate_device_uuid.c
++++ b/utilities/generate_device_uuid.c
+@@ -48,6 +48,25 @@ static void uuid_generate_sha1(uuid_t out, const uuid_t ns, const char *name, si
+   out[6] = (out[6] & 0x0F) | 0x50; // version 5
+   out[8] = (out[8] & 0x3F) | 0x80; // RFC 4122 variant
+ }
++#elif defined(CONFIG_UUID_SHA1_COMPAT)
++#include <openssl/evp.h>
++
++// Older libuuid (before util-linux 2.31) has no uuid_generate_sha1() either,
++// so derive the version 5 UUID with OpenSSL in the same way as on macOS.
++#define uuid_generate_sha1 compat_uuid_generate_sha1
++static void uuid_generate_sha1(uuid_t out, const uuid_t ns, const char *name, size_t len) {
++  unsigned char digest[EVP_MAX_MD_SIZE];
++  unsigned int digest_len = 0;
++  EVP_MD_CTX *ctx = EVP_MD_CTX_new();
++  EVP_DigestInit_ex(ctx, EVP_sha1(), NULL);
++  EVP_DigestUpdate(ctx, ns, sizeof(uuid_t));
++  EVP_DigestUpdate(ctx, name, len);
++  EVP_DigestFinal_ex(ctx, digest, &digest_len);
++  EVP_MD_CTX_free(ctx);
++  memcpy(out, digest, sizeof(uuid_t));
++  out[6] = (out[6] & 0x0F) | 0x50; // version 5
++  out[8] = (out[8] & 0x3F) | 0x80; // RFC 4122 variant
++}
+ #endif
+ 
+ #include "definitions.h"

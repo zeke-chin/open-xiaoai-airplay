@@ -1,0 +1,286 @@
+diff --git a/mdns_tinysvcmdns.c b/mdns_tinysvcmdns.c
+index 2a5e3136..3c91f0b2 100644
+--- a/mdns_tinysvcmdns.c
++++ b/mdns_tinysvcmdns.c
+@@ -38,10 +38,23 @@
+ #include "tinysvcmdns.h"
+ 
+ static struct mdnsd *svr = NULL;
++static struct mdns_service *service = NULL;     // ap1 (_raop._tcp)
++static struct mdns_service *ap2_service = NULL; // ap2 (_airplay._tcp), AirPlay 2 only
+ 
+-static int mdns_tinysvcmdns_register(char *ap1name, __attribute__((unused)) char *ap2name, int port,
+-                                     __attribute__((unused)) char **txt_records,
+-                                     __attribute__((unused)) char **secondary_txt_records) {
++// returns a malloc'ed "<regtype>.local", which tinysvcmdns needs as the service type
++static char *local_regtype(const char *regtype) {
++  if (regtype == NULL)
++    die("tinysvcmdns: regtype is null");
++  char *extendedregtype = malloc(strlen(regtype) + strlen(".local") + 1);
++  if (extendedregtype == NULL)
++    die("tinysvcmdns: could not allocated memory to request a Zeroconf service");
++  strcpy(extendedregtype, regtype);
++  strcat(extendedregtype, ".local");
++  return extendedregtype;
++}
++
++static int mdns_tinysvcmdns_register(char *ap1name, char *ap2name, int port, char **txt_records,
++                                     char **secondary_txt_records) {
+   struct ifaddrs *ifalist;
+   struct ifaddrs *ifa;
+ 
+@@ -128,34 +141,40 @@ static int mdns_tinysvcmdns_register(char *ap1name, __attribute__((unused)) char
+ #ifdef CONFIG_METADATA
+   char *txtwithmetadata[] = {MDNS_RECORD_WITH_METADATA, NULL};
+ #endif
+-  char **txt;
++  char **txt = txt_records;
+ 
++  if (txt == NULL) {
+ #ifdef CONFIG_METADATA
+-  if (config.metadata_enabled)
+-    txt = txtwithmetadata;
+-  else
++    if (config.metadata_enabled)
++      txt = txtwithmetadata;
++    else
+ #endif
++      txt = txtwithoutmetadata;
++  }
+ 
+-    txt = txtwithoutmetadata;
+-
+-  if (config.regtype == NULL)
+-    die("tinysvcmdns: regtype is null");
+-
+-  char *extendedregtype = malloc(strlen(config.regtype) + strlen(".local") + 1);
+-
+-  if (extendedregtype == NULL)
+-    die("tinysvcmdns: could not allocated memory to request a Zeroconf service");
+-
+-  strcpy(extendedregtype, config.regtype);
+-  strcat(extendedregtype, ".local");
++  char *extendedregtype = local_regtype(config.regtype);
++  service = mdnsd_register_svc(svr, ap1name, extendedregtype, port, NULL,
++                               (const char **)txt); // TTL should be 75 minutes, i.e. 4500 seconds
++  free(extendedregtype);
+ 
+-  struct mdns_service *svc =
+-      mdnsd_register_svc(svr, ap1name, extendedregtype, port, NULL,
+-                         (const char **)txt); // TTL should be 75 minutes, i.e. 4500 seconds
+-  mdns_service_destroy(svc);
++  // As with the Avahi and dns_sd backends, AirPlay 2 needs a second, _airplay._tcp, service
++  if ((secondary_txt_records != NULL) && (ap2name != NULL)) {
++    extendedregtype = local_regtype(config.regtype2);
++    ap2_service = mdnsd_register_svc(svr, ap2name, extendedregtype, port, NULL,
++                                     (const char **)secondary_txt_records);
++    free(extendedregtype);
++  }
+ 
+-  free(extendedregtype);
++  return 0;
++}
+ 
++static int mdns_tinysvcmdns_update(char **txt_records, char **secondary_txt_records) {
++  if (svr == NULL)
++    return -1;
++  if ((txt_records != NULL) && (service))
++    mdnsd_update_svc_txt(svr, service, (const char **)txt_records);
++  if ((secondary_txt_records != NULL) && (ap2_service))
++    mdnsd_update_svc_txt(svr, ap2_service, (const char **)secondary_txt_records);
+   return 0;
+ }
+ 
+@@ -164,11 +183,20 @@ static void mdns_tinysvcmdns_unregister(void) {
+     mdnsd_stop(svr);
+     svr = NULL;
+   }
++  if (ap2_service) {
++    mdns_service_destroy(ap2_service);
++    ap2_service = NULL;
++  }
++  if (service) {
++    mdns_service_destroy(service);
++    service = NULL;
++  }
+ }
+ 
+ mdns_backend mdns_tinysvcmdns = {.name = "tinysvcmdns",
+                                  .mdns_register = mdns_tinysvcmdns_register,
+                                  .mdns_unregister = mdns_tinysvcmdns_unregister,
++                                 .mdns_update = mdns_tinysvcmdns_update,
+                                  .mdns_dacp_monitor_start = NULL,
+                                  .mdns_dacp_monitor_set_id = NULL,
+                                  .mdns_dacp_monitor_stop = NULL};
+diff --git a/tinysvcmdns.c b/tinysvcmdns.c
+index 43c86d8d..795b51fd 100644
+--- a/tinysvcmdns.c
++++ b/tinysvcmdns.c
+@@ -537,15 +537,35 @@ void rr_set_nsec(struct rr_entry *rr_nsec, enum rr_type type) {
+   rr_nsec->data.NSEC.bitmap[type / 8] = 1 << (7 - (type % 8));
+ }
+ 
++// like create_label(), but a TXT string may be up to 255 bytes rather than the
++// 63 bytes of a domain name label (AirPlay 2 records such as "pk=..." are longer)
++static uint8_t *create_txt_label(const char *txt) {
++  size_t len = strlen(txt);
++  if (len > 255)
++    return NULL;
++  uint8_t *s = malloc(len + 2);
++  if (s == NULL)
++    die("can not allocate memory for a TXT string in tinysvcmdns.");
++  s[0] = len;
++  memcpy((char *)s + 1, txt, len);
++  s[len + 1] = '\0';
++  return s;
++}
++
+ void rr_add_txt(struct rr_entry *rr_txt, const char *txt) {
+   struct rr_data_txt *txt_rec;
+   assert(rr_txt->type == RR_TXT);
+ 
++  if (strlen(txt) > 255) {
++    warn("tinysvcmdns: TXT string longer than 255 bytes ignored: \"%s\".", txt);
++    return;
++  }
++
+   txt_rec = &rr_txt->data.TXT;
+ 
+   // is current data filled?
+   if (txt_rec->txt == NULL) {
+-    txt_rec->txt = create_label(txt);
++    txt_rec->txt = create_txt_label(txt);
+     return;
+   }
+ 
+@@ -557,7 +577,7 @@ void rr_add_txt(struct rr_entry *rr_txt, const char *txt) {
+   txt_rec->next = malloc(sizeof(struct rr_data_txt));
+ 
+   txt_rec = txt_rec->next;
+-  txt_rec->txt = create_label(txt);
++  txt_rec->txt = create_txt_label(txt);
+   txt_rec->next = NULL;
+ }
+ 
+@@ -1188,6 +1208,8 @@ struct mdnsd {
+ 
+ struct mdns_service {
+   struct rr_list *entries;
++  struct rr_entry *txt; // TXT record, NULL if none
++  struct rr_entry *ptr; // PTR record for the service type, used to re-announce
+ };
+ 
+ /////////////////////////////////
+@@ -1530,8 +1552,14 @@ void *main_loop(struct mdnsd *svr) {
+       DEBUG_PRINTF("data from=%s size=%ld\n", inet_ntoa(fromaddr.sin_addr), (long)recvsize);
+       struct mdns_pkt *mdns = mdns_parse_pkt(pkt_buffer, recvsize);
+       if (mdns != NULL) {
+-        if (process_mdns_pkt(svr, mdns, mdns_reply)) {
+-          size_t replylen = mdns_encode_pkt(mdns_reply, pkt_buffer, PACKET_SIZE);
++        // records may be modified by mdnsd_update_svc_txt() from another thread
++        pthread_mutex_lock(&svr->data_lock);
++        int processed = process_mdns_pkt(svr, mdns, mdns_reply);
++        size_t replylen = 0;
++        if (processed)
++          replylen = mdns_encode_pkt(mdns_reply, pkt_buffer, PACKET_SIZE);
++        pthread_mutex_unlock(&svr->data_lock);
++        if (processed) {
+           send_packet(svr->sockfd, pkt_buffer, replylen);
+         } else if (mdns->num_qn == 0) {
+           DEBUG_PRINTF("(no questions in packet)\n\n");
+@@ -1558,12 +1586,15 @@ void *main_loop(struct mdnsd *svr) {
+       DEBUG_PRINTF("sending announce for %s\n", namestr);
+       free(namestr);
+ 
++      pthread_mutex_lock(&svr->data_lock);
+       announce_srv(svr, mdns_reply, ann_e->name);
++      size_t replylen = 0;
++      if (mdns_reply->num_ans_rr > 0)
++        replylen = mdns_encode_pkt(mdns_reply, pkt_buffer, PACKET_SIZE);
++      pthread_mutex_unlock(&svr->data_lock);
+ 
+-      if (mdns_reply->num_ans_rr > 0) {
+-        size_t replylen = mdns_encode_pkt(mdns_reply, pkt_buffer, PACKET_SIZE);
++      if (replylen > 0)
+         send_packet(svr->sockfd, pkt_buffer, replylen);
+-      }
+     }
+   }
+ 
+@@ -1704,6 +1735,9 @@ struct mdns_service *mdnsd_register_svc(struct mdnsd *svr, const char *instance_
+ 
+   pthread_mutex_unlock(&svr->data_lock);
+ 
++  service->txt = txt_e;
++  service->ptr = ptr_e;
++
+   // don't free type_nlabel - it's with the PTR record
+   if (nlabel)
+     free(nlabel);
+@@ -1715,6 +1749,37 @@ struct mdns_service *mdnsd_register_svc(struct mdnsd *svr, const char *instance_
+   return service;
+ }
+ 
++void mdnsd_update_svc_txt(struct mdnsd *svr, struct mdns_service *srv, const char *txt[]) {
++  struct rr_entry *txt_e = srv->txt;
++  struct rr_data_txt *txt_rec, *next;
++
++  if (txt_e == NULL)
++    return;
++
++  pthread_mutex_lock(&svr->data_lock);
++
++  // free the existing TXT strings, keeping the node embedded in the entry
++  for (txt_rec = &txt_e->data.TXT; txt_rec; txt_rec = next) {
++    next = txt_rec->next;
++    if (txt_rec->txt)
++      free(txt_rec->txt);
++    if (txt_rec != &txt_e->data.TXT)
++      free(txt_rec);
++  }
++  txt_e->data.TXT.txt = NULL;
++  txt_e->data.TXT.next = NULL;
++
++  for (; txt && *txt; txt++)
++    rr_add_txt(txt_e, *txt);
++
++  // re-announce the service so that clients pick up the new TXT record
++  rr_list_append(&svr->announce, srv->ptr);
++
++  pthread_mutex_unlock(&svr->data_lock);
++
++  write_pipe(svr->notify_pipe[1], ".", 1);
++}
++
+ void mdns_service_destroy(struct mdns_service *srv) {
+   assert(srv != NULL);
+   rr_list_destroy(srv->entries, 0);
+@@ -1744,7 +1809,13 @@ struct mdnsd *mdnsd_start() {
+     return NULL;
+   }
+ 
+-  pthread_mutex_init(&server->data_lock, NULL);
++  // recursive: the server loop holds data_lock while answering, and populate_answers()
++  // etc. take it again
++  pthread_mutexattr_t lock_attr;
++  pthread_mutexattr_init(&lock_attr);
++  pthread_mutexattr_settype(&lock_attr, PTHREAD_MUTEX_RECURSIVE);
++  pthread_mutex_init(&server->data_lock, &lock_attr);
++  pthread_mutexattr_destroy(&lock_attr);
+ 
+   // init thread
+   pthread_attr_init(&attr);
+diff --git a/tinysvcmdns.h b/tinysvcmdns.h
+index a8a19a9f..bb00a82a 100644
+--- a/tinysvcmdns.h
++++ b/tinysvcmdns.h
+@@ -227,6 +227,9 @@ struct mdns_service *mdnsd_register_svc(struct mdnsd *svr, const char *instance_
+                                         const char *type, uint16_t port, const char *hostname,
+                                         const char *txt[]);
+ 
++// replaces the TXT record of a service returned by mdnsd_register_svc() and re-announces it
++void mdnsd_update_svc_txt(struct mdnsd *svr, struct mdns_service *srv, const char *txt[]);
++
+ // destroys the mdns_service struct returned by mdnsd_register_svc()
+ void mdns_service_destroy(struct mdns_service *srv);
+ 
