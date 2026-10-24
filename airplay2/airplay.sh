@@ -8,8 +8,13 @@
 DIR=/data/airplay
 # 调试时可指定其他配置：CONF=/tmp/sps-debug.conf /data/airplay/airplay.sh
 CONF="${CONF:-$DIR/shairport-sync.conf}"
-# AirPlay 就绪后播放的提示音（系统自带，本地播放），置空则不播放
-READY_SOUND="${READY_SOUND-/usr/share/sound/bluetooth_connect.opus}"
+# AirPlay 就绪后播放的提示音（本地播放），置空则不播放。
+# 默认使用同目录下的 ready.wav，可替换为任意 miplayer 支持的音频（wav / mp3 / opus）；
+# ready.wav 不存在时使用系统自带的提示音
+READY_SOUND="${READY_SOUND-$DIR/ready.wav}"
+if [ -n "$READY_SOUND" ] && [ ! -f "$READY_SOUND" ]; then
+    READY_SOUND=/usr/share/sound/bluetooth_connect.opus
+fi
 PIDFILE=/tmp/airplay.pid
 
 # 避免重复启动多个守护进程

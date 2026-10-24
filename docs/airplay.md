@@ -53,7 +53,7 @@ client 的所有功能（唤醒词、指令、播放状态监听，录音转发�
 2. 等 wlan0 拿到 IPv4 地址（开机过早启动会导致 nqptp 锁定不了时钟，见[已知问题 4](#4-开机后能连上但没有声音)）
 3. 等系统 `mdnsd` 运行
 4. 启动 nqptp、shairport-sync，各自异常退出后 5 秒自动重启（日志 `/tmp/nqptp.log`、`/tmp/airplay.log`）
-5. nqptp 在运行、shairport-sync 在监听 7000、小爱的 `mediaplayer` 已就绪后，用 `miplayer` 播放一次提示音
+5. nqptp 在运行、shairport-sync 在监听 7000、小爱的 `mediaplayer` 已就绪后，用 `miplayer` 播放一次提示音（`READY_SOUND`，默认 `/data/airplay/ready.wav`）
 
 ## 编译
 
@@ -88,11 +88,21 @@ client 的所有功能（唤醒词、指令、播放状态监听，录音转发�
 
 ### 就绪提示音
 
-`airplay.sh` 中的 `READY_SOUND` 可替换为系统自带的其他声音（`/usr/share/sound/`，其他音色在 `/usr/share/sound-vendor/{XiaoMi,XiaoMi_male,XiaoMi_M88}/`）：
+默认提示音是仓库中的 `airplay2/ready.wav`（约 1.5 秒，44.1kHz 16bit 立体声；整体降低 6 dB，结尾余音做了约 0.3 秒的平滑渐弱并补 0.15 秒静音，开头 5ms 淡入），部署到 `/data/airplay/ready.wav`。
+
+替换方式（任选其一）：
+
+- 用自己的音频覆盖 `/data/airplay/ready.wav`（`miplayer` 支持 wav / mp3 / opus 等常见格式，文件名保持 `ready.wav` 即可，格式以内容为准）
+- 修改 `airplay.sh` 中的 `READY_SOUND` 指向其他文件
+- `READY_SOUND` 置空则不播放；`ready.wav` 不存在时退回系统自带的 `bluetooth_connect.opus`
+
+macOS 上可以用自带的 `afconvert` 把 m4a / mp4 等转换为 wav：`afconvert -f WAVE -d LEI16@44100 input.m4a ready.wav`。
+
+系统自带的音效（`/usr/share/sound/`，其他音色在 `/usr/share/sound-vendor/{XiaoMi,XiaoMi_male,XiaoMi_M88}/`）：
 
 | 类型 | 文件 |
 | --- | --- |
-| 短提示音 | `bluetooth_connect.opus`（默认）、`bluetooth_disconnect.opus`、`mic_on.opus`、`mic_off.opus`、`hourly_chime.opus`、`prompt_power_connected.opus` |
+| 短提示音 | `bluetooth_connect.opus`（`ready.wav` 不存在时使用）、`bluetooth_disconnect.opus`、`mic_on.opus`、`mic_off.opus`、`hourly_chime.opus`、`prompt_power_connected.opus` |
 | 唤醒应答 | `wakeup_zai_01.wav`、`wakeup_zai_02.wav`、`wakeup_wozai.wav`、`wakeup_ei_01.wav` |
 | 语音提示 | `init_wifi_success.opus`、`first_voice.opus`、`tip_zaine.opus`、`tip_shuoba.opus` 等 |
 

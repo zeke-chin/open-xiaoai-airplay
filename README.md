@@ -37,6 +37,7 @@ airplay2/          # AirPlay 2（推荐）：预编译二进制 + 配置 + 启�
 ├── nqptp
 ├── shairport-sync.conf
 ├── airplay.sh     # 守护脚本：等待网络就绪、启动并守护 nqptp / shairport-sync、就绪提示音
+├── ready.wav      # 默认的就绪提示音（可替换）
 └── init.sh        # 开机入口 /data/init.sh 中需要的一行
 airplay1/          # AirPlay 1（classic）：只支持音乐类 App，备用
 build/             # 交叉编译脚本、Dockerfile、补丁
@@ -55,7 +56,7 @@ SPEAKER=root@192.168.31.240
 O="-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa"
 
 ssh $O $SPEAKER 'mkdir -p /data/airplay'
-scp -O $O airplay2/shairport-sync airplay2/nqptp airplay2/shairport-sync.conf airplay2/airplay.sh $SPEAKER:/data/airplay/
+scp -O $O airplay2/shairport-sync airplay2/nqptp airplay2/shairport-sync.conf airplay2/airplay.sh airplay2/ready.wav $SPEAKER:/data/airplay/
 ssh $O $SPEAKER 'chmod +x /data/airplay/shairport-sync /data/airplay/nqptp /data/airplay/airplay.sh'
 
 # 立即启动
@@ -83,7 +84,9 @@ ssh $O $SPEAKER '/data/airplay/airplay.sh > /dev/null 2>&1 &'
 
 `/data/airplay/airplay.sh`：
 
-- `READY_SOUND`：就绪提示音，置空则不播放（可选音效见[技术细节](docs/airplay.md#就绪提示音)）
+- `READY_SOUND`：就绪提示音，默认是 `/data/airplay/ready.wav`，**可替换**：直接用自己的 wav / mp3 / opus 覆盖 `ready.wav`，
+  或把 `READY_SOUND` 指向其他文件（包括系统自带的音效，见[技术细节](docs/airplay.md#就绪提示音)）；置空则不播放。
+  `ready.wav` 不存在时使用系统自带的 `bluetooth_connect.opus`
 
 修改后执行 `killall shairport-sync`，守护脚本会在 5 秒内重新拉起。
 
